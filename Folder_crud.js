@@ -1,15 +1,14 @@
 import Queries from "./Queries";
+import { copy_object } from "./utils/functions";
 
 class Folder_crud extends Queries {
   write = (data, options) => {
     let subfolder = new Array(),
       res;
     if (this.config.subfolder) {
-      if (Array.isArray(this.config.subfolder))
-        this.config.subfolder.map(
-          (prop) => data[prop] && subfolder.push(data[prop])
-        );
-      else subfolder.push(data[prop]);
+      this.config.subfolder.map(
+        (prop) => data[prop] && subfolder.push(data[prop])
+      );
 
       for (let s = 0; s < subfolder.length; s++)
         res = this.write_to_ds(data, { subfolder: subfolder[s] });
@@ -73,9 +72,44 @@ class Folder_crud extends Queries {
 
   update_several = (query, update_query, options) => {};
 
-  remove = (remove_query, options) => {};
+  replace = (replace_query, replacement, options) => {
+    let remove_res = this.remove_several(replace_query, copy_object(options));
+    let write_res = this.write(replacement, { ...options, return_full: true });
 
-  remove_several = (remove_query, options) => {};
+    let ret = {
+      ...write_res,
+      replaced: true,
+      removed: remove_res.data.map((r) => r._id),
+      replacement: copy_object(write_res.insertion),
+    };
+    delete ret.insertion;
+    console.log(ret, "return here");
+    return ret;
+  };
+
+  remove = (remove_query, options, no_limit) => {
+    if (!options) options = new Object();
+    if (typeof remove_query === "string") remove_query = { _id: remove_query };
+    options.limit = no_limit ? -1 : 1;
+    if (options.subfolder) {
+      let result = new Array();
+      if (!Array.isArray(options.subfolder))
+        options.subfolder = new Array(options.subfolder);
+      for (let o = 0; o < options.subfolder.length; o++) {
+        let subfolder = options.subfolder[o];
+        result.push(
+          this.remove_from_ds(remove_query, { ...options, subfolder })
+        );
+      }
+      return result;
+    }
+
+    return this.remove_from_ds(remove_query, options, no_limit);
+  };
+
+  remove_several = (remove_query, options) => {
+    return this.remove(remove_query, options, true);
+  };
 }
 
 export default Folder_crud;

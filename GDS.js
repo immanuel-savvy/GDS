@@ -27,19 +27,19 @@ class GDS extends GDSFile {
   };
 
   sync = async () => {
-    if (!this._fs.existsSync(this.folders_path))
-      this._fs.mkdirSync(this.folders_path, { recursive: true });
-    if (!this._fs.existsSync(this.files_path))
-      this._fs.mkdirSync(this.files_path);
+    let { existsSync, mkdirSync, writeFileSync, readFileSync } = this._fs;
+    if (!existsSync(this.folders_path))
+      mkdirSync(this.folders_path, { recursive: true });
+    if (!existsSync(this.files_path)) mkdirSync(this.files_path);
 
-    if (!this._fs.existsSync(this.ds_config_path)) {
+    if (!existsSync(this.ds_config_path)) {
       this.config = this.create_config();
-      this._fs.writeFileSync(this.ds_config_path, JSON.stringify(this.config), {
+      writeFileSync(this.ds_config_path, JSON.stringify(this.config), {
         encoding: "utf8",
       });
     } else
       this.config = JSON.parse(
-        this._fs.readFileSync(this.ds_config_path, { encoding: "utf8" })
+        readFileSync(this.ds_config_path, { encoding: "utf8" })
       );
 
     this.synced = true;
@@ -56,7 +56,11 @@ class GDS extends GDSFile {
   };
 
   get_folder_by_id = (folder_name) =>
-    this.folders.find((folder) => folder.folder_name === folder_name);
+    this.folders.find(
+      (folder) =>
+        folder.folder_name === folder_name ||
+        folder.folder_name === folder_name.split("~")[0]
+    );
 }
 
 export default GDS;

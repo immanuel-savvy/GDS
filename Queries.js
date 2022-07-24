@@ -34,8 +34,12 @@ class Queries {
 
     if (!exists || replace) {
       if (this.config.subfolder) {
-        if (this.config.recent_filesize >= this.config.max_filesize) {
+        if (
+          !this.config.recent_file ||
+          this.config.recent_filesize >= this.config.max_filesize
+        ) {
           filename = get_timestamp_from_id(data._id);
+
           this.config.recent_file = filename;
           this.config.recent_filesize = 0;
           new_ = true;
@@ -46,7 +50,7 @@ class Queries {
       }
 
       if (!no_joins) data = this.sweep_data(data);
-      this.write_file(filename, data, { new_ });
+      this.write_file(filename, data, { new_, subfolder });
     }
 
     let result = {
@@ -60,7 +64,9 @@ class Queries {
     };
     if (return_full)
       result.insertion =
-        data_bfr_sweep === JSON.stringify(data) ? data : this.readone(data._id);
+        data_bfr_sweep === JSON.stringify(data)
+          ? data
+          : this.readone(data._id, { subfolder: options && options.subfolder });
 
     return result;
   };
@@ -76,7 +82,6 @@ class Queries {
           try {
             file[line] = JSON.parse(file[line]);
           } catch (e) {
-            console.error(file[line]);
             throw new Error(`JSON Parse Error in readfile ::: ${file_to_read}`);
           }
         }
@@ -161,11 +166,14 @@ class Queries {
   };
 
   iterative_read = (lines) => {
-    let folders_et_ids = new Object();
-    for (let l = 0; l < lines.length; l++) {
-      let line = lines[l];
+    let folders_et_ids = new Object(),
+      lines_ids = new Array();
+    lines.map((line) => {
       for (let prop in line) {
-        if (prop === "_id") continue;
+        if (prop === "_id") {
+          lines_ids.push(line[prop]);
+          return;
+        }
 
         let value = line[prop];
         if (typeof value === "string" && valid_id(value)) {
@@ -175,13 +183,17 @@ class Queries {
           else folders_et_ids[folder] = new Array(value);
         }
       }
-    }
+    });
 
     let folders_count = 0;
     for (let folder in folders_et_ids) {
+      let folders_ids = folders_et_ids[folder];
       folders_et_ids[folder] = this.ds
         .get_folder_by_id(folder)
-        .read(folders_et_ids[folder]);
+        .read(folders_ids, {
+          limit: folders_ids.length,
+          subfolder: lines_ids,
+        });
       folders_count++;
     }
 
@@ -203,8 +215,7 @@ class Queries {
   };
 
   read_from_ds = (query, options) => {
-    let file_to_read,
-      limit,
+    let limit,
       or,
       exclude,
       result = new Array();
@@ -222,7 +233,7 @@ class Queries {
 
       for (let i = 0; i < query._id.length; i++) {
         let __id = query._id[i];
-        file_to_read = `${this.folder_path}/${__id}`;
+        let file_to_read = `${this.folder_path}/${__id}`;
         result.push(...this.readfile(file_to_read));
       }
     } else {
@@ -279,32 +290,56 @@ class Queries {
       .filter((file) => file !== ".config");
 
   write_file = (filename, data, options) => {
-    let new_;
+    let new_, subfolder;
     if (options) {
       new_ = options.new_;
+      subfolder = options.subfolder;
     }
-    let filepath = `${this.folder_path}/${filename}`;
+    let filepath = `${this.folder_path}/${
+      this.config.subfolder ? `${subfolder}/` + filename : filename
+    }`;
     data = JSON.stringify(data);
 
     let previous_size = 0;
 
     if (this.config.subfolder) {
-      let bulk = fs.readFileSync(filepath, { encoding: "utf8" }) || "";
-      if (bulk) previous_size = bulk.length;
-      data = `${bulk}${bulk ? "\n" : ""}${data}`;
+      try {
+        let bulk = this.fs.readFileSync(filepath, { encoding: "utf8" }) || "";
+        if (bulk) previous_size = bulk.length;
+        data = `${bulk}${bulk ? "\n" : ""}${data}`;
+      } catch (e) {
+        try {
+          this.fs.mkdirSync(filepath.split("/").slice(0, -1).join("/"));
+        } catch (e) {}
+      }
     }
 
     this.fs.writeFileSync(filepath, data, {
       encoding: "utf8",
     });
 
-    if (new_) this.config.total_file += 1;
+    if (new_) this.config.total_files += 1;
 
     this.config.total_size += data.length - previous_size;
     this.config.total_entries += data
       .slice(previous_size ? previous_size + 1 : 0)
       .split("\n").length;
 
+    this.config.updated = Date.now();
+    this.persist_config();
+  };
+
+  remove_file = (filename, options) => {
+    if (!options) options = {};
+    let { subfolder, initial_size, initial_length } = options;
+
+    this.fs.unlinkSync(
+      `${this.folder_path}${subfolder ? `/${subfolder}` : ""}/${filename}`
+    );
+
+    this.config.total_size -= initial_size || 0;
+    this.config.total_files -= 1;
+    this.config.total_entries -= initial_length || 0;
     this.config.updated = Date.now();
     this.persist_config();
   };
@@ -318,13 +353,117 @@ class Queries {
         if (val._id) {
           let folder = this.ds.get_folder_by_id(val._id);
           if (folder) {
-            folder.write(val);
+            let options_ = new Object(),
+              subfolder = new Array();
+            if (folder.config.subfolder) {
+              folder.config.subfolder.map((sfolder) => {
+                let v = val[sfolder];
+                if (typeof v === "string") subfolder.push(v);
+                else if (typeof v === "object" && valid_id(v._id))
+                  subfolder.push(v._id);
+              });
+              subfolder = subfolder.filter((s) => s);
+              !subfolder.length &&
+                (subfolder.push(data_object._id),
+                (val[folder.config.subfolder[0]] = data_object._id));
+
+              options_.subfolder = subfolder;
+            }
+            folder.write(val, options_);
             data_object[prop] = val._id;
           }
         }
       }
     }
     return data_object;
+  };
+
+  remove_from_ds = (query, options, several) => {
+    let limit,
+      exclude,
+      or,
+      total_remove = 0,
+      removed = new Array();
+
+    limit = options.limit;
+    or = options.or;
+    if (exclude && typeof exclude === "string") exclude = new Array(exclude);
+
+    if (!this.config.subfolder && query && query._id) {
+      let filepath = `${this.folder_path}/${query._id}`;
+      let file = this.readfile(filepath);
+      this.remove_file(query._id, {
+        initial_length: 1,
+        initial_size: JSON.stringify(file).length,
+      });
+      return { removed: true };
+    } else {
+      let subfolders =
+        options && options.subfolder
+          ? new Array(options.subfolder)
+          : this.read_subfolders();
+
+      for (let s = 0; s < subfolders.length; s++) {
+        let subfolder = subfolders[s];
+        let files = !this.config.subfolder
+          ? new Array(subfolder)
+          : this.read_subfolders(subfolder);
+
+        if (!this.config.subfolder && exclude && exclude.includes(subfolder))
+          continue;
+
+        let should_break = false;
+        for (let f = 0; f < files.length; f++) {
+          if (limit === 0) break;
+
+          let file = this.readfile(
+            `${this.folder_path}/${subfolder}${
+              this.config.subfolder ? `/${files[f]}` : ""
+            }`
+          );
+          if (exclude && this.config.subfolder)
+            file = file.filter((line) => !exclude.includes(line._id));
+
+          let match = this.search_file(query, file, or);
+          if (!match.length) continue;
+
+          let file_length = file.length;
+          let filesize = JSON.stringify(file).length;
+
+          if (!this.config.subfolder) {
+            removed.push(file[0]);
+            this.remove_file(subfolder, {
+              initial_length: 1,
+              initial_size: filesize,
+            });
+            file = new Array();
+          } else {
+            file = file
+              .map((line) => {
+                if (match.find((m) => m._id === line._id)) removed.push(line);
+                else return line;
+              })
+              .filter((f) => f);
+            file.length
+              ? this.write_file(files[f], file, { subfolder })
+              : this.remove_file(files[f], {
+                  subfolder,
+                  initial_length: file_length,
+                  initial_size: filesize,
+                });
+
+            total_remove += file_length - file.length;
+            if (limit !== -1 && total_remove >= limit) {
+              removed = match;
+              should_break = true;
+              break;
+            }
+          }
+        }
+        if (should_break) break;
+      }
+    }
+    return { removed: true, data: several ? removed : removed[0] };
   };
 }
 

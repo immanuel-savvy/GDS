@@ -51,7 +51,7 @@ class Folder extends Folder_crud {
       updated: Date.now(),
       max_filesize: 1048576,
       recent_file: null,
-      recent_file_size: 0,
+      recent_filesize: 0,
       total_files: 0,
       total_entries: 0,
       total_size: 0,
